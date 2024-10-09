@@ -1,4 +1,4 @@
-# Student-Management-System
+# TechEduPro
 # How to run this project in linux
 
 -- First create a project named my-java-mysql-app
