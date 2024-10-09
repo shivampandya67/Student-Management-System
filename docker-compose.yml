@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: mydatabase
+      MYSQL_USER: user
+      MYSQL_PASSWORD: userpassword
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      retries: 5
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  java-app:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/mydatabase
+      DB_USER: user
+      DB_PASSWORD: userpassword
+    ports:
+      - "8080:8080"
+    stdin_open: true  # Enable interaction
+    tty: true         # Allocate a pseudo-TTY
+    healthcheck:      # Optional health check for the Java app
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]  # Adjust to your health endpoint
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  mysql-data:
+    driver: local
