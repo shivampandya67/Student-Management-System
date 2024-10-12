@@ -6,7 +6,7 @@ import java.sql.*;
 import java.util.*;
 
 public class myJavaApp {
-    // Create a map to store users and their roles (in a real scenario, you'd get this from a DB)
+    
 
     public static void main(String[] args) {
         
@@ -684,93 +684,141 @@ private static void loadGradesFromFile() {
 
     }
     // 1.Add section method
-    public static void addSection(Scanner scanner, String username, String semester) {
-        
+public static void addSection(Scanner scanner, String username, String semester) {
 
-        System.out.print("Enter CRN: ");
-        String crnInput = scanner.next();
+    System.out.print("Enter CRN: ");
+    String crnInput = scanner.next();
 
-        
-        if (!crnInput.matches("\\d+")) {
-            System.out.println("Error: Invalid CRN input.");
-            return;
+    if (!crnInput.matches("\\d+")) {
+        System.out.println("Error: Invalid CRN input.");
+        return;
+    }
+
+    int crn = Integer.parseInt(crnInput);
+
+    try (Connection conn = DriverManager.getConnection("jdbc:mysql://mysql:3306/mydatabase", "user", "userpassword")) {
+        // Fetch student type and major
+        String studentTypeQuery = "SELECT sType, major FROM STUDENTINFO WHERE sid = ?";
+        String studentType = "";
+        String major = "";
+
+        try (PreparedStatement studentTypeStmt = conn.prepareStatement(studentTypeQuery)) {
+            studentTypeStmt.setInt(1, Integer.parseInt(username));
+            ResultSet studentTypeRs = studentTypeStmt.executeQuery();
+
+            if (studentTypeRs.next()) {
+                studentType = studentTypeRs.getString("sType");
+                major = studentTypeRs.getString("major");
+            } else {
+                System.out.println("Error: Student with ID " + username + " not found.");
+                return;
+            }
         }
 
-        int crn = Integer.parseInt(crnInput);
+        // Fetch the course details, including credits and schedule
+        String courseQuery = "SELECT c.cprefix, c.cno, c.cTitle, s.auth, s.startTime, s.endTime, c.cCredits " +
+                "FROM Courses c JOIN SECTIONS s ON c.cprefix = s.cprefix AND c.cno = s.cno WHERE s.crn = ?";
 
-        
-        try (Connection conn = DriverManager.getConnection("jdbc:mysql://mysql:3306/mydatabase", "user", "userpassword")) {
-            String studentTypeQuery = "SELECT sType, major FROM STUDENTINFO WHERE sid = ?";
-            String studentType = "";
-            String major = "";
+        try (PreparedStatement stmt = conn.prepareStatement(courseQuery)) {
+            stmt.setInt(1, crn);  // Set the CRN in the query
+            ResultSet rs = stmt.executeQuery();
 
-            try (PreparedStatement studentTypeStmt = conn.prepareStatement(studentTypeQuery)) {
-                studentTypeStmt.setInt(1, Integer.parseInt(username));
-                ResultSet studentTypeRs = studentTypeStmt.executeQuery();
+            if (rs.next()) {
+                String cprefix = rs.getString("cprefix");
+                int cno = rs.getInt("cno");
+                String ctitle = rs.getString("cTitle");
+                String authRequired = rs.getString("auth");
+                String startTime = rs.getString("startTime");
+                String endTime = rs.getString("endTime");
+                int courseCredits = rs.getInt("cCredits");
 
-                if (studentTypeRs.next()) {
-                    studentType = studentTypeRs.getString("sType");
-                    major = studentTypeRs.getString("major");
-                } else {
-                    System.out.println("Error: Student with ID " + username + " not found.");
+                // Check if undergraduate student is registering for graduate courses
+                if (studentType.equals("UGRAD") && cno >= 6000) {
+                    System.out.println("Error: Undergraduate students are not allowed to register for graduate courses (6000 and above).");
                     return;
                 }
-            }
 
-            
-            String courseQuery = "SELECT c.cprefix, c.cno, c.cTitle, s.auth, s.startTime, s.endTime " +
-                    "FROM Courses c JOIN SECTIONS s ON c.cprefix = s.cprefix AND c.cno = s.cno WHERE s.crn = ?";
+                // Calculate total credits student has already registered for
+                String creditQuery = "SELECT SUM(c.cCredits) AS totalCredits " +
+                        "FROM ENROLLMENT e " +
+                        "JOIN SECTIONS s ON e.crn = s.crn AND e.term = s.term AND e.year = s.year " +
+                        "JOIN Courses c ON s.cprefix = c.cprefix AND s.cno = c.cno " +
+                        "WHERE e.sid = ? AND e.term = ? AND e.year = 2024";
+                
+                int totalCredits = 0;
+                try (PreparedStatement creditStmt = conn.prepareStatement(creditQuery)) {
+                    creditStmt.setInt(1, Integer.parseInt(username));
+                    creditStmt.setString(2, semester);
+                    ResultSet creditRs = creditStmt.executeQuery();
 
-            try (PreparedStatement stmt = conn.prepareStatement(courseQuery)) {
-                stmt.setInt(1, crn);  // Set the CRN in the query
-                ResultSet rs = stmt.executeQuery();
+                    if (creditRs.next()) {
+                        totalCredits = creditRs.getInt("totalCredits");
+                    }
+                }
 
-                if (rs.next()) {
-                    String cprefix = rs.getString("cprefix");
-                    int cno = rs.getInt("cno");
-                    String ctitle = rs.getString("cTitle");
-                    String authRequired = rs.getString("auth");
-                    String startTime = rs.getString("startTime");
-                    String endTime = rs.getString("endTime");
+                // Add the current course's credits
+                totalCredits += courseCredits;
 
-                    
-                    if (studentType.equals("UGRAD") && cno >= 6000) {
-                        System.out.println("Error: Undergraduate students are not allowed to register for graduate courses (6000 and above).");
+                // Check for credit limit (20 for undergraduates, 15 for graduates)
+                if ((studentType.equals("UGRAD") && totalCredits > 20) ||
+                    (studentType.equals("GRAD") && totalCredits > 15)) {
+                    System.out.println("Error: Credit limit exceeded. You can't register for this course.");
+                    return;
+                }
+
+                // Check for time overlap
+                String timeOverlapQuery = "SELECT s.startTime, s.endTime " +
+                        "FROM ENROLLMENT e " +
+                        "JOIN SECTIONS s ON e.crn = s.crn AND e.term = s.term AND e.year = s.year " +
+                        "WHERE e.sid = ? AND e.term = ? AND e.year = 2024 " +
+                        "AND ((s.startTime <= ? AND s.endTime >= ?) OR (s.startTime <= ? AND s.endTime >= ?))";
+
+                try (PreparedStatement timeOverlapStmt = conn.prepareStatement(timeOverlapQuery)) {
+                    timeOverlapStmt.setInt(1, Integer.parseInt(username));
+                    timeOverlapStmt.setString(2, semester);
+                    timeOverlapStmt.setString(3, startTime);
+                    timeOverlapStmt.setString(4, startTime);
+                    timeOverlapStmt.setString(5, endTime);
+                    timeOverlapStmt.setString(6, endTime);
+
+                    ResultSet timeRs = timeOverlapStmt.executeQuery();
+                    if (timeRs.next()) {
+                        System.out.println("Error: Time overlap detected with another course.");
                         return;
                     }
-
-                    
-                    System.out.println(cprefix + cno + ", " + ctitle + " ADDED.");
-
-                    
-                    String insertQuery = "INSERT INTO ENROLLMENT (sid, term, crn, year, GPA, branch, tookFinAid, createdAt, updatedAt) " +
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-                    try (PreparedStatement insertStmt = conn.prepareStatement(insertQuery)) {
-                        insertStmt.setInt(1, Integer.parseInt(username)); // Use the logged-in student's ID
-                        insertStmt.setString(2, semester); // Use term input from the user
-                        insertStmt.setInt(3, crn); // CRN from the user input
-                        insertStmt.setInt(4, 2024); // Fixed year
-                        insertStmt.setString(5, null); // GPA set to null
-                        insertStmt.setString(6, major); // Major from the STUDENTINFO table
-                        insertStmt.setBoolean(7, true); // tookFinAid set to true
-
-                        
-                        insertStmt.executeUpdate();
-                        System.out.println("Enrollment added for student ID " + username + " for term " + semester);
-                    } catch (SQLException e) {
-                        e.printStackTrace();
-                        System.out.println("Error while inserting enrollment.");
-                    }
-
-                } else {
-                    System.out.println("Error: Course with CRN " + crn + " not found.");
                 }
+
+                // If all checks pass, insert enrollment
+                System.out.println(cprefix + cno + ", " + ctitle + " ADDED.");
+
+                String insertQuery = "INSERT INTO ENROLLMENT (sid, term, crn, year, GPA, branch, tookFinAid, createdAt, updatedAt) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
+                try (PreparedStatement insertStmt = conn.prepareStatement(insertQuery)) {
+                    insertStmt.setInt(1, Integer.parseInt(username));
+                    insertStmt.setString(2, semester);
+                    insertStmt.setInt(3, crn);
+                    insertStmt.setInt(4, 2024);
+                    insertStmt.setString(5, null); // GPA set to null
+                    insertStmt.setString(6, major); // Major from STUDENTINFO
+                    insertStmt.setBoolean(7, true); // tookFinAid set to true
+
+                    insertStmt.executeUpdate();
+                    System.out.println("Enrollment added for student ID " + username + " for term " + semester);
+                } catch (SQLException e) {
+                    e.printStackTrace();
+                    System.out.println("Error while inserting enrollment.");
+                }
+
+            } else {
+                System.out.println("Error: Course with CRN " + crn + " not found.");
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
-            System.out.println("Database connection error.");
         }
-    }
+    } catch (SQLException e) {
+        e.printStackTrace();
+        System.out.println("Database connection error.");
+    }
+}
+
     //2. drop section method
     private static void dropSection(Scanner scanner, String username) {
         System.out.print("Enter CRN: ");
